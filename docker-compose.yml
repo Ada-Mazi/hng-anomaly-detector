@@ -10,8 +10,6 @@ services:
       - HNG-nginx-logs:/var/log/nginx
     networks:
       - app-network
-    depends_on:
-      - nextcloud
 
   nextcloud:
     image: kefaslungu/hng-nextcloud
@@ -22,7 +20,7 @@ services:
       - nextcloud-data:/var/www/html
       - HNG-nginx-logs:/var/log/nginx:ro
     environment:
-      - NEXTCLOUD_TRUSTED_DOMAINS=hngdevops.mooo.com 34.31.206.191
+      - NEXTCLOUD_TRUSTED_DOMAINS=34.31.206.191 34.31.206.191:8080 localhost
 
   detector:
     build: ./detector
@@ -37,8 +35,6 @@ services:
       - NET_ADMIN
     environment:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
-    depends_on:
-      - nginx
 
 volumes:
   HNG-nginx-logs:
