@@ -29,53 +29,60 @@ unbanner = Unbanner(blocker, notifier, audit, cfg['unban_schedule'])
 
 print('HNG Anomaly Detector starting...')
 
+def monitor_loop():
+    last_global_alert = 0
+    for entry in tail_log(cfg['log_path']):
+        ip = entry.get('source_ip', '').split(',')[0].strip()
+        status = int(entry.get('status', 200))
+        is_error = status >= 400
+
+        if not ip or ip == '-':
+            continue
+
+        print('Processing request from IP: ' + ip)
+
+        baseline.record_request(is_error=is_error)
+        detector.record(ip, is_error=is_error)
+
+        recalculated = baseline.maybe_recalculate()
+        mean, stddev, error_mean = baseline.get_baseline()
+
+        if recalculated:
+            audit.log_baseline(mean, stddev)
+            print('Baseline recalculated: mean=' + str(round(mean,2)) + ' stddev=' + str(round(stddev,2)))
+
+        update_state(
+            blocker.get_banned(),
+            detector.get_global_rate(),
+            detector.get_top_ips(),
+            mean,
+            stddev
+        )
+
+        banned = blocker.get_banned()
+
+        if ip not in banned:
+            anomalous, rate, zscore = detector.check_ip(ip, mean, stddev, error_mean)
+            if anomalous:
+                success = blocker.ban(ip)
+                if success:
+                    count = blocker.get_ban_count(ip)
+                    schedule = cfg['unban_schedule']
+                    duration = schedule[min(count - 1, len(schedule) - 1)]
+                    notifier.send_ban(ip, rate, mean, duration)
+                    audit.log_ban(ip, 'zscore=' + str(round(zscore, 2)), rate, mean, duration)
+                    unbanner.schedule_unban(ip, time.time())
+                    print('BANNED: ' + ip)
+
+        now = time.time()
+        if now - last_global_alert > 60:
+            g_anomalous, g_rate, g_zscore = detector.check_global(mean, stddev)
+            if g_anomalous:
+                notifier.send_global_alert(g_rate, mean, g_zscore)
+                last_global_alert = now
+                print('GLOBAL ALERT: rate=' + str(g_rate))
+
 threading.Thread(target=unbanner.run, daemon=True).start()
-threading.Thread(target=run_dashboard, args=(cfg['dashboard_port'],), daemon=True).start()
+threading.Thread(target=monitor_loop, daemon=True).start()
 
-last_global_alert = 0
-
-for entry in tail_log(cfg['log_path']):
-    ip = entry.get('source_ip', '').split(',')[0].strip()
-    status = int(entry.get('status', 200))
-    is_error = status >= 400
-
-    if not ip or ip == '-':
-        continue
-
-    baseline.record_request(is_error=is_error)
-    detector.record(ip, is_error=is_error)
-
-    recalculated = baseline.maybe_recalculate()
-    mean, stddev, error_mean = baseline.get_baseline()
-
-    if recalculated:
-        audit.log_baseline(mean, stddev)
-
-    update_state(
-        blocker.get_banned(),
-        detector.get_global_rate(),
-        detector.get_top_ips(),
-        mean,
-        stddev
-    )
-
-    banned = blocker.get_banned()
-
-    if ip not in banned:
-        anomalous, rate, zscore = detector.check_ip(ip, mean, stddev, error_mean)
-        if anomalous:
-            success = blocker.ban(ip)
-            if success:
-                count = blocker.get_ban_count(ip)
-                schedule = cfg['unban_schedule']
-                duration = schedule[min(count - 1, len(schedule) - 1)]
-                notifier.send_ban(ip, rate, mean, duration)
-                audit.log_ban(ip, 'zscore=' + str(round(zscore, 2)), rate, mean, duration)
-                unbanner.schedule_unban(ip, time.time())
-
-    now = time.time()
-    if now - last_global_alert > 60:
-        g_anomalous, g_rate, g_zscore = detector.check_global(mean, stddev)
-        if g_anomalous:
-            notifier.send_global_alert(g_rate, mean, g_zscore)
-            last_global_alert = now
+run_dashboard(cfg['dashboard_port'])
